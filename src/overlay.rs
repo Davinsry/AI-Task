@@ -40,6 +40,7 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
 };
@@ -83,6 +84,8 @@ struct OverlayState {
     dwrite_factory: IDWriteFactory,
     text_format_ui: IDWriteTextFormat,
     text_format_small: IDWriteTextFormat,
+    text_format_toolbar: IDWriteTextFormat,
+    text_format_toolbar_small: IDWriteTextFormat,
     text_format_hud_title: IDWriteTextFormat,
     text_format_hud_answer_big: IDWriteTextFormat,
     text_format_hud_body: IDWriteTextFormat,
@@ -92,6 +95,7 @@ struct OverlayState {
     brushes: Option<CachedBrushes>,
 
     phase: OverlayPhase,
+    ui_scale: f32,
     start_instant: Instant,
     ocr_rx: Option<Receiver<Result<OcrLayout, String>>>,
     ocr_layout: OcrLayout,
@@ -173,43 +177,50 @@ impl OverlayState {
     }
 
     fn top_toolbar_rect(&self) -> RectF {
-        let w = 528.0_f32.min(self.width_f() - 32.0);
-        let h = 44.0;
+        let s = self.ui_scale;
+        let w = (540.0 * s).min(self.width_f() - 32.0 * s);
+        let h = 44.0 * s;
         let x = (self.width_f() - w) * 0.5;
-        let y = 22.0;
+        let y = 22.0 * s;
         RectF::new(x, y, w, h)
     }
 
     fn btn_box_rect(&self) -> RectF {
+        let s = self.ui_scale;
         let bar = self.top_toolbar_rect();
-        RectF::new(bar.x + 8.0, bar.y + 6.0, 114.0, 32.0)
+        RectF::new(bar.x + 8.0 * s, bar.y + 6.0 * s, 116.0 * s, 32.0 * s)
     }
 
     fn btn_linear_rect(&self) -> RectF {
+        let s = self.ui_scale;
         let bar = self.top_toolbar_rect();
-        RectF::new(bar.x + 128.0, bar.y + 6.0, 114.0, 32.0)
+        RectF::new(bar.x + 130.0 * s, bar.y + 6.0 * s, 116.0 * s, 32.0 * s)
     }
 
     fn btn_solve_all_rect(&self) -> RectF {
+        let s = self.ui_scale;
         let bar = self.top_toolbar_rect();
-        RectF::new(bar.x + 248.0, bar.y + 6.0, 118.0, 32.0)
+        RectF::new(bar.x + 252.0 * s, bar.y + 6.0 * s, 120.0 * s, 32.0 * s)
     }
 
     fn btn_copy_all_rect(&self) -> RectF {
+        let s = self.ui_scale;
         let bar = self.top_toolbar_rect();
-        RectF::new(bar.x + 372.0, bar.y + 6.0, 108.0, 32.0)
+        RectF::new(bar.x + 378.0 * s, bar.y + 6.0 * s, 112.0 * s, 32.0 * s)
     }
 
     fn btn_close_rect(&self) -> RectF {
+        let s = self.ui_scale;
         let bar = self.top_toolbar_rect();
-        RectF::new(bar.right() - 40.0, bar.y + 6.0, 32.0, 32.0)
+        RectF::new(bar.right() - 42.0 * s, bar.y + 6.0 * s, 34.0 * s, 32.0 * s)
     }
 
     fn status_pill_rect(&self) -> RectF {
-        let w = 540.0_f32.min(self.width_f() - 32.0);
-        let h = 36.0;
+        let s = self.ui_scale;
+        let w = (620.0 * s).min(self.width_f() - 32.0 * s);
+        let h = 34.0 * s;
         let x = (self.width_f() - w) * 0.5;
-        let y = 72.0;
+        let y = 74.0 * s;
         RectF::new(x, y, w, h)
     }
 
@@ -541,8 +552,8 @@ impl OverlayState {
         // Compute smart non-overlapping screen placement for the Floating Stealth Answer HUD
         let mon_w = self.frame.width as i32;
         let mon_h = self.frame.height as i32;
-        let hud_w = HUD_WIDTH as i32;
-        let hud_h = HUD_HEIGHT as i32;
+        let hud_w = (HUD_WIDTH as f32 * self.ui_scale).round() as i32;
+        let hud_h = (HUD_HEIGHT as f32 * self.ui_scale).round() as i32;
 
         let sel_right = crop_rect.right() as i32;
         let sel_left = crop_rect.x as i32;
@@ -597,9 +608,11 @@ impl OverlayState {
 
             if let Some(rt) = &self.render_target {
                 let _ = rt.Resize(&D2D_SIZE_U {
-                    width: HUD_WIDTH,
-                    height: HUD_HEIGHT,
+                    width: hud_w as u32,
+                    height: hud_h as u32,
                 });
+                let dpi = 96.0 * self.ui_scale;
+                rt.SetDpi(dpi, dpi);
             }
             let _ = InvalidateRect(self.hwnd, None, false);
         }
@@ -1741,13 +1754,14 @@ impl OverlayState {
         let Some(b) = &self.brushes else { return };
         let solid = &b.solid;
 
+        let s = self.ui_scale;
         let bar = self.top_toolbar_rect();
         let pill = self.status_pill_rect();
 
         let bar_rrect = D2D1_ROUNDED_RECT {
             rect: to_d2d_rect(bar),
-            radiusX: 10.0,
-            radiusY: 10.0,
+            radiusX: 10.0 * s,
+            radiusY: 10.0 * s,
         };
         solid.SetColor(&D2D1_COLOR_F {
             r: 0.067,
@@ -1763,11 +1777,11 @@ impl OverlayState {
             b: 0.20,
             a: 0.90,
         });
-        rt.DrawRoundedRectangle(&bar_rrect, solid, 1.2, None);
+        rt.DrawRoundedRectangle(&bar_rrect, solid, 1.2 * s, None);
 
         let effective = self.effective_mode();
         let (hx, hy) = self.hover_pos;
-        let btn_radius = 7.0;
+        let btn_radius = 7.0 * s;
 
         for (rect, label, is_active) in [
             (
@@ -1822,7 +1836,7 @@ impl OverlayState {
                 b: 1.0,
                 a: 1.0,
             });
-            draw_centered_text(rt, &self.text_format_ui, label, rect, solid);
+            draw_centered_text(rt, &self.text_format_toolbar, label, rect, solid);
         }
 
         let status_msg = if let Some((toast, _)) = &self.status_toast {
@@ -1845,22 +1859,33 @@ impl OverlayState {
             )
         };
 
+        let pill_rrect = D2D1_ROUNDED_RECT {
+            rect: to_d2d_rect(pill),
+            radiusX: 8.0 * s,
+            radiusY: 8.0 * s,
+        };
         solid.SetColor(&D2D1_COLOR_F {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.85,
+            r: 0.067,
+            g: 0.067,
+            b: 0.067,
+            a: 0.86,
         });
-        let shadow_rect = RectF::new(pill.x + 1.0, pill.y + 1.5, pill.width, pill.height);
-        draw_centered_text(rt, &self.text_format_small, &status_msg, shadow_rect, solid);
+        rt.FillRoundedRectangle(&pill_rrect, solid);
+        solid.SetColor(&D2D1_COLOR_F {
+            r: 0.20,
+            g: 0.20,
+            b: 0.20,
+            a: 0.75,
+        });
+        rt.DrawRoundedRectangle(&pill_rrect, solid, 1.0 * s, None);
 
         solid.SetColor(&D2D1_COLOR_F {
-            r: 0.82,
-            g: 0.88,
-            b: 0.96,
-            a: 0.96,
+            r: 0.88,
+            g: 0.92,
+            b: 0.98,
+            a: 0.98,
         });
-        draw_centered_text(rt, &self.text_format_small, &status_msg, pill, solid);
+        draw_centered_text(rt, &self.text_format_toolbar_small, &status_msg, pill, solid);
     }
 }
 
@@ -2215,6 +2240,34 @@ pub fn run_overlay_session(
         let init_x = frame.local_click_x;
         let init_y = frame.local_click_y;
 
+        let text_format_toolbar = dwrite_factory
+            .CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                13.0,
+                w!("en-us"),
+            )
+            .map_err(|e| format!("Gagal membuat format font toolbar: {e}"))?;
+        let _ = text_format_toolbar.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        let _ = text_format_toolbar.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        let text_format_toolbar_small = dwrite_factory
+            .CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                12.0,
+                w!("en-us"),
+            )
+            .map_err(|e| format!("Gagal membuat format font toolbar small: {e}"))?;
+        let _ = text_format_toolbar_small.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        let _ = text_format_toolbar_small.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
         let state = Box::new(OverlayState {
             hwnd: HWND::default(),
             frame,
@@ -2222,6 +2275,8 @@ pub fn run_overlay_session(
             dwrite_factory,
             text_format_ui,
             text_format_small,
+            text_format_toolbar,
+            text_format_toolbar_small,
             text_format_hud_title,
             text_format_hud_answer_big,
             text_format_hud_body,
@@ -2230,6 +2285,7 @@ pub fn run_overlay_session(
             screen_bitmap: None,
             brushes: None,
             phase: OverlayPhase::Selecting,
+            ui_scale: 1.0,
             start_instant: Instant::now(),
             ocr_rx: Some(rx),
             ocr_layout: OcrLayout::default(),
@@ -2281,6 +2337,41 @@ pub fn run_overlay_session(
         })?;
 
         (*state_ptr).hwnd = hwnd;
+        let dpi = GetDpiForWindow(hwnd);
+        let ui_scale = if dpi > 0 {
+            (dpi as f32 / 96.0).clamp(1.0, 2.5)
+        } else {
+            1.0
+        };
+        (*state_ptr).ui_scale = ui_scale;
+        if (ui_scale - 1.0).abs() > 0.01 {
+            if let Ok(tf) = (*state_ptr).dwrite_factory.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                13.0 * ui_scale,
+                w!("en-us"),
+            ) {
+                let _ = tf.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = tf.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                (*state_ptr).text_format_toolbar = tf;
+            }
+            if let Ok(tf_s) = (*state_ptr).dwrite_factory.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                12.0 * ui_scale,
+                w!("en-us"),
+            ) {
+                let _ = tf_s.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = tf_s.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                (*state_ptr).text_format_toolbar_small = tf_s;
+            }
+        }
         set_overlay_hwnd(hwnd);
         set_overlay_fullscreen_capturing(true);
 
@@ -2415,21 +2506,28 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
 
         WM_MOUSEMOVE => {
-            let x = (lparam.0 & 0xFFFF) as i16 as f32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            let raw_x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            let (x, y) = if state.phase == OverlayPhase::Answering {
+                (raw_x / state.ui_scale, raw_y / state.ui_scale)
+            } else {
+                (raw_x, raw_y)
+            };
 
             if state.phase == OverlayPhase::Answering && state.hud_dragging_window {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
                     let new_x = pt.x - state.hud_drag_offset.0;
                     let new_y = pt.y - state.hud_drag_offset.1;
+                    let hud_px_w = (HUD_WIDTH as f32 * state.ui_scale).round() as i32;
+                    let hud_px_h = (HUD_HEIGHT as f32 * state.ui_scale).round() as i32;
                     let _ = SetWindowPos(
                         hwnd,
                         HWND_TOPMOST,
                         new_x,
                         new_y,
-                        HUD_WIDTH as i32,
-                        HUD_HEIGHT as i32,
+                        hud_px_w,
+                        hud_px_h,
                         SWP_NOACTIVATE,
                     );
                 }
@@ -2452,8 +2550,13 @@ unsafe extern "system" fn overlay_wnd_proc(
             if state.closing_soon {
                 return LRESULT(0);
             }
-            let x = (lparam.0 & 0xFFFF) as i16 as f32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            let raw_x = (lparam.0 & 0xFFFF) as i16 as f32;
+            let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            let (x, y) = if state.phase == OverlayPhase::Answering {
+                (raw_x / state.ui_scale, raw_y / state.ui_scale)
+            } else {
+                (raw_x, raw_y)
+            };
             state.hover_pos = (x, y);
 
             if state.phase == OverlayPhase::Answering {
