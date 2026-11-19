@@ -34,6 +34,7 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
     VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
@@ -42,12 +43,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetClientRect,
     GetMessageW, GetSystemMetrics, GetWindowLongPtrW, IsWindow, KillTimer, LoadCursorW,
     RegisterClassW, SendMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-    ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HICON,
-    ICON_BIG, ICON_SMALL, IDC_ARROW, IDC_HAND, IDC_IBEAM, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW,
-    WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETICON,
-    WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+    SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
+    GWLP_USERDATA, HICON, HWND_TOP, ICON_BIG, ICON_SMALL, IDC_ARROW, IDC_HAND, IDC_IBEAM, MSG,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE,
+    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETICON, WM_SIZE,
+    WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED,
+    WS_SYSMENU, WS_VISIBLE,
 };
 
 #[link(name = "kernel32")]
@@ -94,6 +96,7 @@ struct DashboardState {
     fmt_small_right: IDWriteTextFormat,
     fmt_small_center: IDWriteTextFormat,
     rt: Option<ID2D1HwndRenderTarget>,
+    ui_scale: f32,
 
     // AI Configuration State
     ai_config: AiConfig,
@@ -387,8 +390,9 @@ impl DashboardState {
         }
         let mut rc = windows::Win32::Foundation::RECT::default();
         let _ = GetClientRect(self.hwnd, &mut rc);
-        let w = (rc.right - rc.left).max(WIN_WIDTH as i32) as u32;
-        let h = (rc.bottom - rc.top).max(WIN_HEIGHT as i32) as u32;
+        let w = (rc.right - rc.left).max(1) as u32;
+        let h = (rc.bottom - rc.top).max(1) as u32;
+        let dpi = 96.0 * self.ui_scale;
 
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -396,8 +400,8 @@ impl DashboardState {
                 format: DXGI_FORMAT_B8G8R8A8_UNORM,
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
-            dpiX: 96.0,
-            dpiY: 96.0,
+            dpiX: dpi,
+            dpiY: dpi,
             usage: D2D1_RENDER_TARGET_USAGE_NONE,
             minLevel: Default::default(),
         };
@@ -802,7 +806,7 @@ impl DashboardState {
                 &rt,
                 &self.fmt_small_left,
                 &page_info,
-                RectF::new(24.0, 350.0, 512.0, 18.0),
+                RectF::new(24.0, 349.0, 512.0, 20.0),
                 b,
             );
         }
@@ -1416,6 +1420,7 @@ pub fn run_dashboard_ui(initial_mode: SelectionMode) -> DashboardAction {
                 fmt_small_right,
                 fmt_small_center,
                 rt: None,
+                ui_scale: 1.0,
                 ai_config: ai_cfg,
                 active_input: ActiveTextInput::None,
                 show_api_key: false,
@@ -1457,6 +1462,40 @@ pub fn run_dashboard_ui(initial_mode: SelectionMode) -> DashboardAction {
             .ok()?;
 
             (*state_ptr).hwnd = hwnd;
+
+            let dpi = GetDpiForWindow(hwnd);
+            let raw_scale = if dpi > 0 {
+                (dpi as f32 / 96.0).clamp(1.0, 2.5)
+            } else {
+                1.0
+            };
+            let max_scale = ((screen_h - 60) as f32 / WIN_HEIGHT as f32).clamp(1.0, 2.5);
+            let ui_scale = raw_scale.min(max_scale);
+            (*state_ptr).ui_scale = ui_scale;
+
+            if (ui_scale - 1.0).abs() > 0.01 {
+                let mut rect = windows::Win32::Foundation::RECT {
+                    left: 0,
+                    top: 0,
+                    right: (WIN_WIDTH as f32 * ui_scale).round() as i32,
+                    bottom: (WIN_HEIGHT as f32 * ui_scale).round() as i32,
+                };
+                let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
+                let _ = AdjustWindowRectExForDpi(&mut rect, style, false, WINDOW_EX_STYLE(0), dpi);
+                let scaled_w = rect.right - rect.left;
+                let scaled_h = rect.bottom - rect.top;
+                let new_x = ((screen_w - scaled_w) / 2).max(10);
+                let new_y = ((screen_h - scaled_h) / 2).max(10);
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    new_x,
+                    new_y,
+                    scaled_w,
+                    scaled_h,
+                    SWP_NOZORDER,
+                );
+            }
 
             let dark_mode: i32 = 1;
             let _ = DwmSetWindowAttribute(
@@ -1567,8 +1606,8 @@ unsafe extern "system" fn dashboard_wnd_proc(
         }
 
         WM_MOUSEMOVE => {
-            let x = (lparam.0 & 0xFFFF) as i16 as f32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            let x = ((lparam.0 & 0xFFFF) as i16 as f32) / state.ui_scale;
+            let y = (((lparam.0 >> 16) & 0xFFFF) as i16 as f32) / state.ui_scale;
             state.hover = (x, y);
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
@@ -1605,8 +1644,8 @@ unsafe extern "system" fn dashboard_wnd_proc(
         }
 
         WM_LBUTTONDOWN => {
-            let x = (lparam.0 & 0xFFFF) as i16 as f32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+            let x = ((lparam.0 & 0xFFFF) as i16 as f32) / state.ui_scale;
+            let y = (((lparam.0 >> 16) & 0xFFFF) as i16 as f32) / state.ui_scale;
 
             // Custom shortcut recording click on active_shortcut_bar
             let active_bar = state.active_shortcut_bar_rect();
